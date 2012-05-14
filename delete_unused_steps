@@ -1,0 +1,103 @@
+#!/usr/bin/ruby -w
+# artifactory
+# script/delete_unused_steps
+
+# pipe file containing NOT MATCHED BY ANY STEPS cucumber output to this script and it will delete the steps from their definitions files.
+##
+# Usage:
+#    $ cat unused_steps_output.txt | delete_unused_steps
+
+# process:
+# accept piped input, process any directive lines:
+# - build list of steps
+# - sort by file and ascending line number
+# - process each file: create temp file, copy all lines excluding unused step(s), delete original file renane temp file to original file
+# if the resulting file has no steps, it is deleted 
+
+
+valid_line_pattern = /^[0-9\.]* \/\^.*\$\/\s*#[a-z0-9_\/\s]*\.rb:[0-9]*$/
+step_pattern = /[^\/]*(\/[^\/]*\/)([^#]*)#([^:].*):([0-9]*)/
+current_line_number = line_number = offset = number_of_steps = number_of_files = 0
+
+def file_empty?(file)
+  file.rewind
+  while line = file.gets do
+    if !line.lstrip.empty?
+      break
+    end
+  end
+  file.eof?
+end
+
+
+def rename_and_close_files(original, updated)
+  begin
+    original_name = original.path
+    original.close
+    updated_name = updated.path
+    if file_empty?(updated)
+      updated.close; File.delete(updated_name);  File.delete(original_name)
+    else
+      File.delete(original_name)
+      updated.close; File.rename(updated_name, original_name)
+    end
+  rescue Exception => msg
+    puts "rename_and_close_files"+ ">"*10 + msg
+  end
+end
+
+
+# main
+# get entire list of steps to sort
+step_array = Array.new
+STDIN.read.split("\n").each do |line|
+  number_of_files += 1
+  if valid_line_pattern.match(line)
+    line.sub(step_pattern) {|m| m } 
+    step_array <<  {:step => $1, :file => $3.lstrip, :line => $4.to_i}
+  end
+end
+
+#sort
+step_array = step_array.sort_by {|a| a[:file] + "%05d" % a[:line]}    # for some reason, sort_by! returns undefined method
+
+# process each step
+current_file = nil
+begin
+  current_file = File.new(step_array.first[:file], "r")
+  updated_file = File.new(step_array.first[:file]+".tmp", "w+")
+rescue Exception => msg
+  puts "initial files " + ">"*10 + msg
+end
+
+step_array.each do |step|
+ if !current_file.path.eql?(step[:file])
+   while(line = current_file.gets) do updated_file.puts(line) unless line.lstrip.empty? end # get remainder of file
+   rename_and_close_files(current_file, updated_file)
+   begin
+     current_file = File.new(step[:file])
+     updated_file = File.new(step[:file]+ ".tmp", "w+")
+   rescue Exception => msg
+     puts "new files" + ">"*10 + msg
+   end
+   number_of_files += 1
+   offset = current_line_number = step[:line]
+ else
+   offset = step[:line] - current_line_number
+   current_line_number = step[:line]
+ end
+
+ (offset - 1).times {line = current_file.gets; if !line.nil? && !line.empty? then updated_file.puts(line) end }
+ line = current_file.gets
+
+ while (line = current_file.gets)
+   current_line_number += 1
+   if /^end$/.match(line)
+   number_of_steps += 1
+   break
+ end
+  end
+end
+
+puts "Deleted #{number_of_steps} steps from #{number_of_files} files"
+
